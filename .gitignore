@@ -1,0 +1,30 @@
+# Build outputs
+build/
+*.o
+*.obj
+*.exe
+*.lib
+*.pdb
+*.idb
+*.exp
+
+# Test files
+test_*.c
+test_*.exe
+test.log
+rebuild.log
+test_*.py
+test_roundtrip/
+test_bug5/
+test_fixed/
+test_orig/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Claude settings
+.claude/settings.local.json
+
+# Oodle DLL (keep for runtime, but don't commit)
+oo2core_*.dll
