@@ -177,7 +177,7 @@ int oodle_compress(unsigned char *in, int insz, unsigned char *out) {
         if(algo_env) {
             algo = atoi(algo_env);
         } else {
-            algo = 1;  // LZHLW (raw value 0x00, matches friend's working TTG-Tool compatible version)
+            algo = 8;  // Kraken (raw value 0x06, matches original game archive)
         }
     }
 

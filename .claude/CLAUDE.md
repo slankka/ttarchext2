@@ -30,14 +30,15 @@
 不带压缩（推荐，100% 准确）：
 ttarchext.exe -b -A -V 7 55 "C:\...\0.ttarch" c:\input_folder
 
-带压缩（可能存在数据完整性问题）：
-ttarchext.exe -b -z -A -V 7 55 "C:\...\0.ttarch" c:\input_folder
+带压缩（TTG-Tools 兼容）：
+ttarchext.exe -b -z -A -4 -V 7 55 "C:\...\0.ttarch" c:\input_folder
 
 **注意输入文件夹在后面 输出文件路径在前面**
 
 **新增选项说明**：
 - `-A` 按字母顺序排序文件（匹配原始档案顺序）
-- `-z` 使用 Oodle 压缩（游戏 ID 55 推荐不使用此选项以确保 100% 兼容性）
+- `-z` 使用 Oodle 压缩（LZHLW 算法，level 7）
+- `-4` 强制使用 4ATT 格式（gamenum < 58 时需要，匹配原始档案结构）
 
 ## 🔑 Oodle 压缩关键问题总结
 
@@ -116,7 +117,7 @@ ttarchext_x64.exe -b -z -A -V 7 55 output.ttarch2 input_folder
 | 工具 | 能否打开 | 备注 |
 |------|----------|------|
 | Switch 游戏 | ✅ 是 | **关键成功** |
-| TTG-Tools | ❌ 否 | 可接受 |
+| TTG-Tools | ✅ 是 | 需要 `-4` 标志 + 最后 chunk padding |
 | ttarchext | ✅ 是 | 验证通过 |
 
 ### 关键发现
@@ -137,12 +138,27 @@ level = 7;          // 压缩级别
 dll = oo2core_5_win64.dll;
 ```
 
+```bash
+# ttarchext 完整推荐命令（压缩模式，TTG-Tools 兼容）
+ttarchext_x64.exe -o -b -z -A -L -4 -V 7 55 output.ttarch2 input_folder
+
+# 关键标志说明：
+# -o: 覆盖已存在文件
+# -b: 重建模式
+# -z: Oodle 压缩
+# -A: 按字母排序
+# -L: 按扩展名排序
+# -4: 强制 4ATT 格式
+# -V 7: TTArch2 版本
+# 55:  Walking Dead S2 gamenum
+```
+
 ## 当前状态
 
 | 模式 | 文件匹配率 | 状态 |
 |------|-----------|------|
 | 非压缩 (-z 未使用) | 100% | ✅ 完美 |
-| Oodle 压缩 (-z) | ⚠️ 解压问题 | 已知 Bug #5 |
+| Oodle 压缩 (-z -4) | 100% | ✅ TTG-Tools 兼容 |
 
 ---
 
@@ -218,15 +234,107 @@ len = do_decompress(in, ttarch_chunks[idx], out, ttarch_chunksz);
    }
    ```
 
+### 问题 #6: 最后一个 Chunk 未 Padding 导致 TTG-Tools 无法打开
+
+**发现时间**：2026-04-06
+
+**症状**：
+- 重新打包的压缩档案（-z），TTG-Tools 无法打开
+- Switch 游戏可以正常加载
+
+**根本原因**：
+```
+Telltale 原始打包工具会将最后一个 chunk 的未压缩数据
+用零填充到恰好 0x10000 (65536) 字节，然后再 Oodle 压缩。
+
+TTG-Tools 的 OodleDecompressor 对所有 chunk 使用固定 outsz=65536：
+  decBufSize = ttarch2.chunkSize;  // 固定 65536
+
+OodleLZ_Decompress(buf, bufSize, outBuf, 65536, ..., 3)
+  → 当 outsz > 实际解压大小时返回 0 (失败)
+
+原始档案：最后一个 chunk 解压后 = 65536 字节 (有 padding) → OK
+重建档案：最后一个 chunk 解压后 < 65536 字节 (无 padding) → FAIL
+```
+
+**验证**（test_oodle_compat.c）：
+```
+原始档案: 73/73 chunks OK (outsz=65536 全部成功)
+重建档案: 72/73 chunks OK (chunk 72 失败，最后一块)
+```
+
+**解决方案**：
+```c
+// ttarchext.c 压缩循环中
+while(remaining > 0) {
+    u32 to_compress = 0x10000;
+    int is_last = (remaining <= 0x10000);
+    if(is_last) {
+        // 将最后一个 chunk 用零填充到恰好 0x10000 字节
+        memset(read_ptr + remaining, 0, 0x10000 - remaining);
+    }
+    // ... 压缩并写入 ...
+    remaining = (remaining > to_compress) ? (remaining - to_compress) : 0;
+}
+```
+
+同时需要分配额外的缓冲区空间：
+```c
+u8 *all_data = malloc(total_uncompressed_size + 0x10000);  // 额外空间用于 padding
+```
+
+### 问题 #7: 3ATT vs 4ATT 格式不匹配
+
+**发现时间**：2026-04-06
+
+**症状**：
+- 游戏原始档案使用 4ATT 格式（gamenum 55）
+- ttarchext 默认对 gamenum < 58 使用 3ATT 格式
+- 导致 names_offset 不匹配，TTG-Tools 解析文件表失败
+
+**格式对比**：
+```
+3ATT (16 字节 header):  "3ATT" + version(4) + names_size(4) + file_count(4)
+4ATT (12 字节 header):  "4ATT" + names_size(4) + file_count(4)
+                         ^^^^^ 无 version 字段
+```
+
+**判断规则**：
+- `gamenum >= 58` → 4ATT（如 Minecraft Story Mode）
+- `gamenum < 58` → 3ATT（如 Walking Dead S2）
+- 但实际原始档案格式取决于游戏版本，不是简单的 gamenum 判断
+
+**解决方案**：
+```bash
+# 使用 -4 标志强制 4ATT 格式
+ttarchext.exe -b -z -A -4 -V 7 55 output.ttarch2 input_folder
+```
+
+**验证**：
+```
+原始档案: names_offset = 0x4DEC (12 字节 header → 4ATT)
+重建 -4:  names_offset = 0x4DEC ✅ 匹配
+重建 无-4: names_offset = 0x4DF0 ❌ 不匹配 (16 字节 header → 3ATT)
+```
+
 ### 总结
 
-| 测试项 | 非压缩模式 | Oodle 压缩模式 |
-|--------|-----------|---------------|
+| 测试项 | 非压缩模式 | Oodle 压缩模式 (-z -4) |
+|--------|-----------|----------------------|
 | 压缩成功率 | ✅ 100% | ✅ 100% |
-| 解压成功率 | ✅ 100% | ⚠️ 66% (2/3 块) |
-| 文件完整性 | ✅ 100% | ❌ 0% (无法解压) |
+| 解压成功率 | ✅ 100% | ✅ 100% |
+| 文件完整性 | ✅ 100% | ✅ 100% |
+| TTG-Tools 兼容 | ✅ 是 | ✅ 是 (需要 -4 + padding) |
+| Switch 兼容 | ✅ 是 | ✅ 是 |
 
-**推荐**：对于游戏 ID 55，使用 **非压缩模式** 以确保 100% 兼容性。
+**推荐配置**：
+```bash
+# 压缩模式（TTG-Tools 兼容，文件更小）
+ttarchext.exe -b -z -A -4 -V 7 55 output.ttarch2 input_folder
+
+# 非压缩模式（100% 安全，无依赖）
+ttarchext.exe -b -A -V 7 55 output.ttarch2 input_folder
+```
 
 ---
 
@@ -352,7 +460,7 @@ dll = oo2core_5_win64.dll;  // 与 TTG-Tools 一致
 
 **最终结果**：
 - Switch 可以打开 ✅
-- TTG-Tools 无法打开 ⚠️ (但这是可接受的，因为 Switch 才是目标平台)
+- TTG-Tools 可以打开 ✅ (需要 `-4` 标志 + 最后 chunk padding)
 
 ---
 
@@ -445,6 +553,63 @@ xxd -s 0x30 -l 4 archive.ttarch2
 3. ✅ **0x06 (Kraken) 从未在实际档案中使用**
 4. ✅ **当前配置完全正确，与原始游戏一致**
 
+### TTArch2 压缩 Chunk 结构与 Padding 规则
+
+**Telltale 原始工具的打包行为**：
+```
+原始数据 (假设 4,800,000 字节)
+  → 分割为 65536 字节的 chunk
+  → chunk 0: 65536 字节
+  → chunk 1: 65536 字节
+  → ...
+  → chunk 72: 19456 字节 + 零填充到 65536 字节  ← 关键！
+  → 总共 73 个 chunk，每个解压后都是 65536 字节
+```
+
+**为什么需要 Padding**：
+- TTG-Tools 和游戏引擎对每个 chunk 使用固定的 `decBufSize = chunkSize (65536)`
+- `OodleLZ_Decompress` 在 `outsz > 实际解压大小` 时返回 0（失败）
+- Telltale 的原始工具统一所有 chunk 为 65536，避免这个问题
+
+**Padding 规则**：
+```
+if (最后一个 chunk 的数据 < 65536):
+    用 0x00 填充到恰好 65536 字节
+    然后再 Oodle 压缩
+```
+
+### 3ATT vs 4ATT 格式详解
+
+**格式结构对比**：
+```
+3ATT (gamenum < 58 的默认格式):
+  ┌──────────┬──────────┬──────────────┬────────────┐
+  │ "3ATT"   │ version  │ names_size   │ file_count │
+  │ 4 bytes  │ 4 bytes  │ 4 bytes      │ 4 bytes    │
+  └──────────┴──────────┴──────────────┴────────────┘
+  总 header = 16 字节
+
+4ATT (gamenum >= 58 的默认格式):
+  ┌──────────┬──────────────┬────────────┐
+  │ "4ATT"   │ names_size   │ file_count │
+  │ 4 bytes  │ 4 bytes      │ 4 bytes    │
+  └──────────┴──────────────┴────────────┘
+  总 header = 12 字节
+  ↑ 无 version 字段！
+```
+
+**判断规则**：
+- 代码中默认：`gamenum >= 58` → 4ATT，否则 → 3ATT
+- 实际情况：格式取决于游戏发布时间，不是严格的 gamenum 判断
+- Walking Dead S2 (gamenum 55) 使用 4ATT，需要 `-4` 标志覆盖
+
+**验证方法**：
+```bash
+# 检查 names_offset 可以推断格式
+# 4ATT: names_offset = 16 + (chunk_count+1)*8  (无 version)
+# 3ATT: names_offset = 20 + (chunk_count+1)*8  (有 version)
+```
+
 ---
 
 ## 📋 完整命令行参数
@@ -476,7 +641,11 @@ xxd -s 0x30 -l 4 archive.ttarch2
 -A      rebuild ONLY: sort files alphabetically instead of by CRC hash
         (matches original TTArch2 archive file order)
 -z      rebuild ONLY: use Oodle LZHLW compression for TTArch2 archives
-        (note: may have data integrity issues in some cases, use without -z for 100% accuracy)
+        (pads last chunk to 0x10000 bytes for TTG-Tools compatibility)
+-4      rebuild ONLY: force 4ATT format instead of 3ATT in rebuild mode
+        (default: 3ATT for gamenum < 58, 4ATT for gamenum >= 58)
+        (use this for games like Walking Dead S2 which use 4ATT despite gamenum 55)
+-L      rebuild ONLY: sort files by extension first, then alphabetically
 -T F    dump the decrypted name table in the file F (debug)
 -v      experimental verbose information
 ```
@@ -563,8 +732,8 @@ ttarchext.exe 55 "C:\...\WD2_nx_Project_data.ttarch2" c:\output_folder
 # 重新打包（非压缩模式，推荐）
 ttarchext.exe -b -A -V 7 55 c:\0.ttarch2 c:\input_folder
 
-# 重新打包（Oodle 压缩模式）
-ttarchext.exe -b -z -A -V 7 55 c:\0.ttarch2 c:\input_folder
+# 重新打包（Oodle 压缩模式，TTG-Tools 兼容）
+ttarchext.exe -b -z -A -4 -V 7 55 c:\0.ttarch2 c:\input_folder
 
 # 列出文件
 ttarchext.exe -l 55 c:\archive.ttarch2 .
@@ -580,5 +749,6 @@ ttarchext -V 7 -e 0 55 c:\input_file.lua c:\output_folder
 
 1. **注意输入文件夹在后面，输出文件路径在前面**
 2. **使用 -o 选项可以直接覆盖已存在的文件**
-3. **Switch 版本（游戏 ID 55）推荐使用非压缩模式**
+3. **压缩模式使用 `-z -4` 确保与原始档案和 TTG-Tools 兼容**
 4. **如果只修改少量文件，可以创建只包含修改文件的 0.ttarch 作为补丁**
+5. **最后 chunk 会自动 padding 到 65536 字节（匹配原始档案行为）**

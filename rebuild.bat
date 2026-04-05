@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 REM ============================================================================
 REM TTArch2 Patch Rebuild Script
 REM ============================================================================
@@ -47,7 +48,7 @@ echo Source: %SOURCE_ARCHIVE%
 echo Target: %PATCH_DIR%
 echo.
 
-.\ttarchext_x64.exe -V 7 %GAME_NUM% "%SOURCE_ARCHIVE%" "%PATCH_DIR%"
+.\ttarchext_x64.exe -o -V 7 %GAME_NUM% "%SOURCE_ARCHIVE%" "%PATCH_DIR%"
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
@@ -121,7 +122,7 @@ echo - Alphabetical sort (-A): Match original archive format
 echo - Version 7 (-V 7): Force TTArch2 version
 echo.
 
-.\ttarchext_x64.exe -b -z -A -V 7 %GAME_NUM% "%OUTPUT_FILE%" "%PATCH_DIR%"
+.\ttarchext_x64.exe -o -b -z -A -L -4 -V 7 %GAME_NUM% "%OUTPUT_FILE%" "%PATCH_DIR%"
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
@@ -155,5 +156,3 @@ echo.
 echo Patch directory kept at: %PATCH_DIR%
 echo You can manually delete it when done.
 echo.
-
-pause

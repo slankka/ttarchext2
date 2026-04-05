@@ -134,6 +134,8 @@ int     list_only       = 0,
         ttgtools_fix    = 0,    // the current ttgtools is not able to handle them, even with the work-around
         use_oodle       = 0,    // enable Oodle compression in rebuild mode
         keep_lua_ext    = 0,    // keep .lua extension instead of converting to .lenc
+        sort_alpha      = 0,    // sort files alphabetically instead of CRC64 hash
+        force_4att      = 0,    // force 4ATT format instead of 3ATT in rebuild mode
         gamenum         = 0;
 u64     g_dbg_offset    = 0;
 u8      *filter_files   = NULL,
@@ -321,6 +323,8 @@ int main(int argc, char *argv[]) {
             "-z      use Oodle compression in rebuild mode (creates zCTT instead of NCTT)\n"
             "-L      keep .lua extension instead of converting to .lenc for gamenum < 56\n"
             "        (by default ttarchext converts .lua to .lenc for older games)\n"
+            "-4      force 4ATT format in rebuild mode (default: 3ATT for gamenum < 58,\n"
+            "        4ATT for gamenum >= 58)\n"
             "-T F    dump the decrypted name table in the file F (debug)\n"
             "-v      experimental verbose information\n"
             "\n", argv[0]);
@@ -394,6 +398,8 @@ int main(int argc, char *argv[]) {
             case 'x': xmode             = 0;                    break;
             case 'z': use_oodle         = 1;                    break;
             case 'L': keep_lua_ext      = 1;                    break;
+            case 'A': sort_alpha        = 1;                    break;
+            case '4': force_4att        = 1;                    break;
             case 'T': dump_table        = argv[++i];            break;
             case 'v': verbose           = 1;                    break;
             default: {
@@ -710,6 +716,7 @@ u32 rebuild_it(u8 *output_name, FILE *fdo) {
             data_size   = 0,
             size_check;
     u32     i,
+            j,
             tmp,
             tot         = 0,
             totdirs     = 0,
@@ -767,7 +774,22 @@ u32 rebuild_it(u8 *output_name, FILE *fdo) {
 
     if(ext && !stricmp(ext, ".ttarch2")) {
 
-        build_sort_ttarch2_crc_names(files, tot);
+        if(sort_alpha) {
+            // Sort files alphabetically by name
+            for(i = 0; i < (tot - 1); i++) {
+                for(j = i + 1; j < tot; j++) {
+                    if(stricmp(import_filename(files[j].name), import_filename(files[i].name)) < 0) {
+                        files_t tmp;
+                        memcpy(&tmp,      &files[i], sizeof(files_t));
+                        memcpy(&files[i], &files[j], sizeof(files_t));
+                        memcpy(&files[j], &tmp,      sizeof(files_t));
+                    }
+                }
+            }
+            printf("- sorted %u files alphabetically\n", tot);
+        } else {
+            build_sort_ttarch2_crc_names(files, tot);
+        }
 
         // If file_data was pre-allocated, we need to re-map it to match the sorted files array
         // This is because build_sort_ttarch2_crc_names sorts the files array
@@ -802,10 +824,10 @@ u32 rebuild_it(u8 *output_name, FILE *fdo) {
             printf("- Oodle compression mode: building uncompressed data first...\n");
 
             // Build the complete uncompressed data structure
-            // For gamenum < 58: 4(3ATT) + 4(version) + 4(names_size) + 4(file_count) + info_size + names_size = 16 + info_size + names_size
-            // For gamenum >= 58: 4(4ATT) + 4(names_size) + 4(file_count) + info_size + names_size = 12 + info_size + names_size
+            // For gamenum < 58 (and without -4): 4(3ATT) + 4(version) + 4(names_size) + 4(file_count) + info_size + names_size = 16 + info_size + names_size
+            // For gamenum >= 58 (or with -4): 4(4ATT) + 4(names_size) + 4(file_count) + info_size + names_size = 12 + info_size + names_size
             u64 header_data_size;
-            if(gamenum >= 58) {
+            if(gamenum >= 58 || force_4att) {
                 header_data_size = 4 + 4 + 4 + info_size + names_size;  // 4ATT + names_size + file_count + info + names
             } else {
                 header_data_size = 4 + 4 + 4 + 4 + info_size + names_size;  // 3ATT + version + names_size + file_count + info + names
@@ -815,7 +837,7 @@ u32 rebuild_it(u8 *output_name, FILE *fdo) {
             u64 offset_table_size = 8 * (chunk_count + 1);
 
             // Allocate buffer for all uncompressed data
-            u8 *all_data = malloc(total_uncompressed_size);
+            u8 *all_data = malloc(total_uncompressed_size + 0x10000);  // extra for last chunk padding
             if(!all_data) {
                 printf("\nError: Cannot allocate %u bytes for uncompressed data\n", (u32)total_uncompressed_size);
                 exit(1);
@@ -824,8 +846,8 @@ u32 rebuild_it(u8 *output_name, FILE *fdo) {
 
             u8 *write_ptr = all_data;
 
-            // Write 3ATT header
-            if(gamenum >= 58) {
+            // Write 3ATT/4ATT header
+            if(gamenum >= 58 || force_4att) {
                 write_ptr += putxx(write_ptr, 0x54544134, 4);  // 4ATT
             } else {
                 write_ptr += putxx(write_ptr, 0x54544133, 4);  // 3ATT
@@ -940,7 +962,13 @@ u32 rebuild_it(u8 *output_name, FILE *fdo) {
             //printf("- starting compression loop (remaining=%u)...\n", (u32)remaining);
 
             while(remaining > 0) {
-                u32 to_compress = (remaining > 0x10000) ? 0x10000 : (u32)remaining;
+                u32 to_compress = 0x10000;
+                int is_last = (remaining <= 0x10000);
+                if(is_last) {
+                    // Pad last chunk with zeros to exactly 0x10000 bytes
+                    // (original archives do this so TTG-Tools can decompress with outsz=65536)
+                    memset(read_ptr + remaining, 0, 0x10000 - remaining);
+                }
                 if((current_chunk % 10) == 0) {
                     printf("  compressing chunk %u (remaining=%u)...\n", current_chunk, (u32)remaining);
                 }
@@ -963,7 +991,7 @@ u32 rebuild_it(u8 *output_name, FILE *fdo) {
                 chunk_offsets[current_chunk] = ftell(fdo);
 
                 read_ptr += to_compress;
-                remaining -= to_compress;
+                remaining = (remaining > to_compress) ? (remaining - to_compress) : 0;
             }
 
             free(all_data);
@@ -987,7 +1015,7 @@ u32 rebuild_it(u8 *output_name, FILE *fdo) {
             fputxx(fdo, 0x5454434e, 4);  // NCTT
             fputxx(fdo, 4 + 4 + 4 + 4 + info_size + names_size + data_size, 8);
 
-            if(gamenum >= 58) {
+            if(gamenum >= 58 || force_4att) {
                 fputxx(fdo, 0x54544134, 4);  // 4ATT
             } else {
                 fputxx(fdo, 0x54544133, 4);  // 3ATT
@@ -1828,10 +1856,18 @@ u64 ttarch_fread(void *ptr, u64 size, FILE *stream) {
             len = ttarch_chunksz;
             memcpy(out, in, len);
         } else {
-            // BUG FIX #5: Use exact decompressed size for the last chunk
-            u64 chunk_outsz = (idx == ttarch_tot_idx - 1 && ttarch_last_chunk_sz > 0)
-                              ? ttarch_last_chunk_sz : ttarch_chunksz;
-            len = do_decompress(in, ttarch_chunks[idx], out, chunk_outsz);
+            // BUG FIX #5: Last chunk may be smaller than chunk_size.
+            // Try chunk_size first (handles original padded archives),
+            // then fall back to calculated exact size (handles our rebuilt archives).
+            len = do_decompress(in, ttarch_chunks[idx], out, ttarch_chunksz);
+            if(len == 0 && idx == ttarch_tot_idx - 1 && ttarch_last_chunk_sz > 0) {
+                len = do_decompress(in, ttarch_chunks[idx], out, ttarch_last_chunk_sz);
+            }
+            if(!len) {
+                printf("\nError: failed to decompress chunk %u at offset 0x%08x (%d bytes)\n",
+                       (u32)idx, (u32)g_dbg_offset, (int)ttarch_chunks[idx]);
+                exit(1);
+            }
         }
         if(ttarch_rem) {
             if(ttarch_rem > len) {
@@ -2186,7 +2222,7 @@ i64 _oodle_decompress(u8 *in, i64 insz, u8 *out, i64 outsz) {
     if(!ret) {
         printf("\nError: the compressed oodle input at offset 0x%08x (%d -> %d) is wrong or incomplete\n", (int)g_dbg_offset, (int)insz, (int)outsz);
         printf("Compressed data header: %02x %02x %02x %02x\n", in[0], in[1], in[2], in[3]);
-        exit(1);
+        // Don't exit here - let the caller (ttarch_fread) try fallback sizes
     }
     return ret;
 }
