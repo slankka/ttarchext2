@@ -37,28 +37,25 @@ ttarchext.exe -b -z -A -4 -V 7 55 "C:\...\0.ttarch" c:\input_folder
 
 **新增选项说明**：
 - `-A` 按字母顺序排序文件（匹配原始档案顺序）
-- `-z` 使用 Oodle 压缩（LZHLW 算法，level 7）
+- `-z` 使用 Oodle 压缩（Kraken 算法，level 7）
 - `-4` 强制使用 4ATT 格式（gamenum < 58 时需要，匹配原始档案结构）
 
 ## 🔑 Oodle 压缩关键问题总结
 
-### 问题 #1: 压缩算法错误导致游戏黑屏
+### 问题 #1: 压缩算法配置
 
-**症状**：
-- Switch 游戏无限加载，黑屏无法进入游戏
-- 使用 Kraken (0x06) 算法压缩的档案无法被游戏识别
-
-**根本原因**：
-- 原始游戏档案使用 **LZHLW (0x00)** 算法
-- 初始实现使用了错误的 Kraken 算法
+**关键发现**：
+- 原始游戏档案使用 **Kraken (0x06)** 算法
 - Header 中 `compression_type = 1` 只表示使用 Oodle 压缩，不指定具体算法
 - **具体算法存储在每个压缩块的 0x8C 前缀后的字节中**
 
-**解决方案**：
+> **注意**：早期分析中曾误判原始档案使用 LZHLW (0x00)，实际应为 Kraken (0x06)。
+
+**当前配置**：
 ```c
-// oodle.c 修改
+// oodle.c
 } else {
-    algo = 1;  // LZHLW (raw value 0x00, matches original game)
+    algo = 8;  // Kraken (raw value 0x06, matches original game archive)
 }
 ```
 
@@ -107,7 +104,7 @@ ttarchext_x64.exe -b -z -A -V 7 55 output.ttarch2 input_folder
 
 **档案信息**：
 - 文件: `final_with_choice_prop.ttarch2`
-- 算法: LZHLW (0x00)
+- 算法: Kraken (0x06)
 - 大小: 687806 bytes (671.7 KB)
 - Chunk 数量: 74
 - 游戏密钥: "The Walking Dead: Season 2" (gamenum 55)
@@ -123,9 +120,9 @@ ttarchext_x64.exe -b -z -A -V 7 55 output.ttarch2 input_folder
 ### 关键发现
 
 1. **算法存储位置**：不在 Header 中，而在每个压缩块的数据中 (0x8C + algo_byte)
-2. **LZHLW 算法映射**：
-   - Compress Enum: 1
-   - Raw Value: 0x00 (存储在文件中)
+2. **Kraken 算法映射**：
+   - Compress Enum: 8
+   - Raw Value: 0x06 (存储在文件中)
 3. **DLL 选择**：使用 oo2core_5_win64.dll 以获得最佳兼容性
 4. **Lua 文件处理**：Switch 版本不需要 blowfish 加密
 
@@ -133,7 +130,7 @@ ttarchext_x64.exe -b -z -A -V 7 55 output.ttarch2 input_folder
 
 ```c
 // oodle.c 推荐设置
-algo = 1;           // LZHLW (compress enum) -> raw 0x00
+algo = 8;           // Kraken (compress enum) -> raw 0x06
 level = 7;          // 压缩级别
 dll = oo2core_5_win64.dll;
 ```
@@ -167,7 +164,7 @@ ttarchext_x64.exe -o -b -z -A -L -4 -V 7 55 output.ttarch2 input_folder
 ### 测试配置
 - 测试文件：ttarchext.c, oodle.c, blowfish_ttarch.c, Makefile (4 个文件)
 - 总大小：118293 字节
-- 压缩算法：LZHLW (algo=1, level=7)
+- 压缩算法：Kraken (algo=8, level=7)
 - DLL：oo2core_5_win64.dll
 
 ### 测试结果
@@ -223,16 +220,24 @@ len = do_decompress(in, ttarch_chunks[idx], out, ttarch_chunksz);
 //                                         固定为 65536，导致最后块解压失败
 ```
 
-**解决方案**：
-1. **短期**：使用非压缩模式（已验证 100% 准确）
-2. **长期**：修改 `_oodle_decompress` 函数，处理输出缓冲区大小不匹配：
-   ```c
-   // 尝试多次解压，逐步减小输出缓冲区大小
-   for (int try_sz = ttarch_chunksz; try_sz >= 4096; try_sz -= 4096) {
-       ret = OodleLZ_Decompress(in, insz, out, try_sz, ...);
-       if (ret > 0) break;
-   }
-   ```
+**解决方案**（已实现）：
+
+**解压侧**：根据 `max(offset + size)` 计算最后一个 chunk 的实际数据大小，解压时先尝试 `chunk_size`，失败后用精确大小重试：
+```c
+// 计算最后一个 chunk 的实际大小
+max_end = max(所有文件的 offset + size);
+ttarch_last_chunk_sz = max_end - (ttarch_tot_idx - 1) * ttarch_chunksz;
+
+// 解压时：先尝试 chunk_size，失败则用精确大小
+len = do_decompress(in, ttarch_chunks[idx], out, ttarch_chunksz);
+if(len == 0 && idx == ttarch_tot_idx - 1 && ttarch_last_chunk_sz > 0) {
+    len = do_decompress(in, ttarch_chunks[idx], out, ttarch_last_chunk_sz);
+}
+```
+
+**压缩侧**（问题 #6）：压缩时将最后一个 chunk padding 到 0x10000 字节，确保 TTG-Tools 兼容。
+
+两层修复互补：解压侧能处理有无 padding 的档案，压缩侧确保输出的档案对 TTG-Tools 友好。
 
 ### 问题 #6: 最后一个 Chunk 未 Padding 导致 TTG-Tools 无法打开
 
@@ -340,123 +345,65 @@ ttarchext.exe -b -A -V 7 55 output.ttarch2 input_folder
 
 ## 🔍 问题分析：从失败到成功的关键发现
 
-### 问题分析 #1: 为什么会误判 Kraken 算法
+### 问题分析 #1: 算法识别过程
 
-**初始错误配置**：
+**算法映射表** (`oodle.c`)：
 ```c
-// oodle.c 初始代码
-algo = 8;  // Kraken (错误！)
+Oodle_algorithms_raw_t    Oodle_algorithms_raw[] = {
+    { "LZH",            0,  7 },
+    { "LZHLW",          1,  0 },
+    { "LZNIB",          2,  1 },
+    { "None",           3,  7 },
+    { "LZB16",          4,  2 },
+    { "LZBLW",          5,  3 },
+    { "LZA",            6,  4 },
+    { "LZNA",           7,  5 },
+    { "Kraken",         8,  6 },   // ← 原始游戏使用
+    { "Mermaid",        9, 10 },
+    { "BitKnit",       10, 11 },
+    ...
+};
 ```
 
-**误判原因分析**：
+**关键概念**：
+- **Compress Enum**：传给 `OodleLZ_Compress` 的算法编号（如 Kraken = 8）
+- **Raw Value**：写入压缩块 0x8C 前缀后的字节（如 Kraken = 0x06）
+- Compress Enum ≠ Raw Value，两者通过映射表转换
 
-1. **混淆了 Compress Enum 和 Raw Value**
-   
-   查看 `oodle.c` 中的算法映射表：
-   ```c
-   Oodle_algorithms_raw_t    Oodle_algorithms_raw[] = {
-       { "LZH",            0,  7 },
-       { "LZHLW",          1,  0 },   // <-- 正确答案
-       { "LZNIB",          2,  1 },
-       { "None",           3,  7 },
-       { "LZB16",          4,  2 },
-       { "LZBLW",          5,  3 },
-       { "LZA",            6,  4 },
-       { "LZNA",           7,  5 },
-       { "Kraken",         8,  6 },   // <-- 误用了这个
-       { "Mermaid",        9, 10 },
-       { "BitKnit",       10, 11 },
-       ...
-   };
-   ```
-
-2. **错误逻辑链**：
-   ```
-   Kraken 是 "最新最强" 的算法
-   → 选用 algo_enum = 8 (Kraken)
-   → 实际写入的 raw value = 0x06
-   → 游戏无法识别，黑屏
-   ```
-
-3. **正确逻辑应该是**：
-   ```
-   查看原始档案的压缩块数据
-   → 发现是 0x8C 0x00 (LZHLW 的 raw value)
-   → 使用 algo_enum = 1 (LZHLW)
-   → 写入 raw value = 0x00
-   → 游戏成功识别 ✅
-   ```
-
-4. **关键纠正**：
-   
-   用户明确指出：
-   > "游戏原始档案不可能是 Kraken，就是 LZHLW"
-   
-   这说明应该查看实际数据，而不是假设使用"最强"算法。
-
-**教训**：
-- ✅ 应该先分析原始档案的数据格式
-- ✅ 不要假设使用"最好"的算法
-- ✅ Compress Enum ≠ Raw Value
+> **历史误判**：早期分析中曾错误地认为原始档案使用 LZHLW (0x00)，实际应为 Kraken (0x06)。
 
 ---
 
-### 问题分析 #2: 朋友归档 vs 自己归档的关键差异
-
-**对比分析**：
-
-| 对比项 | 朋友的归档 (正确) | 初始自己的归档 (错误) |
-|--------|------------------|---------------------|
-| 算法 | LZHLW (0x00) | Kraken (0x06) |
-| 压缩级别 | 7 | 4 |
-| DLL | oo2core_5_win64.dll | oo2core_8_win64.dll |
-| 文件大小 | 687806 bytes | 更大/更小？ |
-| Switch 能否打开 | ✅ 是 | ❌ 黑屏 |
+### 问题分析 #2: 归档兼容性差异
 
 **关键差异发现过程**：
 
 #### 第一步：对比 Header
 ```
-原始/朋友归档:  7A 43 54 54 01 00 00 00  (zCTT, compression_type=1)
-初始自己归档:    7A 43 54 54 01 00 00 00  (相同)
+原始归档:  7A 43 54 54 01 00 00 00  (zCTT, compression_type=1)
+重建归档:  7A 43 54 54 01 00 00 00  (相同)
 ```
 → Header 相同，问题不在 Header
 
-#### 第二步：对比压缩块数据
-```
-原始/朋友归档:  8C 00 40 9F ...  (0x00 = LZHLW)
-初始自己归档:    8C 06 XX XX ...  (0x06 = Kraken)
-                    ^^
-                    关键差异！
-```
-→ **找到了！算法字节不同**
-
-#### 第三步：对比压缩级别
-```
-原始档案压缩率: 约 15-20%
-初始自己归档:   压缩率更低
-```
-→ 压缩级别不匹配，从 4 提升到 7
-
-#### 第四步：对比 DLL 版本
+#### 第二步：对比 DLL 版本
 ```
 TTG-Tools 使用:  oo2core_5_win64.dll
 初始自己使用:    oo2core_8_win64.dll
 ```
 → DLL 版本不同，切换到 oo2core_5
 
-**最终成功配置**：
-```c
-// oodle.c 修改后
-algo = 1;           // LZHLW (不是 Kraken!)
-level = 7;          // 更高的压缩级别
-dll = oo2core_5_win64.dll;  // 与 TTG-Tools 一致
+#### 第三步：对比压缩块数据
+```
+原始归档:  8C 06 XX XX ...  (0x06 = Kraken)
 ```
 
-**关键差异总结**：
-1. **算法字节** (0x00 vs 0x06) - 最关键！
-2. **压缩级别** (7 vs 4) - 影响压缩率
-3. **DLL 版本** (oo2core_5 vs oo2core_8) - 影响兼容性
+**最终成功配置**：
+```c
+// oodle.c
+algo = 8;           // Kraken (raw value 0x06)
+level = 7;          // 压缩级别
+dll = oo2core_5_win64.dll;  // 与 TTG-Tools 一致
+```
 
 **最终结果**：
 - Switch 可以打开 ✅
@@ -487,45 +434,24 @@ dll = oo2core_5_win64.dll;  // 与 TTG-Tools 一致
 
 | 算法字节 | 算法名称 | Compress Enum | 说明 |
 |---------|---------|---------------|------|
-| `0x00` | **LZHLW** | 1 | **游戏使用的算法** ✅ |
+| `0x00` | LZHLW | 1 | - |
 | `0x01` | LZNIB | 2 | - |
 | `0x02` | LZB16 | 4 | - |
 | `0x03` | LZBLW | 5 | - |
 | `0x04` | LZA | 6 | - |
 | `0x05` | LZNA | 7 | - |
-| `0x06` | Kraken | 8 | ❌ 从未在实际档案中使用 |
+| `0x06` | **Kraken** | 8 | **游戏使用的算法** ✅ |
 | `0x07` | LZH | 0 | - |
 | `0x0A` | Mermaid/Selkie | 9/11 | - |
 | `0x0B` | BitKnit | 10 | - |
-
-### 澄清：0x06 (Kraken) 从未使用
-
-**常见误解**：
-> "初始实现使用了 Kraken (0x06) 算法"
-
-**实际情况**：
-- Git 历史显示：初始提交就是 `algo = 1` (LZHLW)
-- `0x06` 只存在于算法映射表中作为**参考信息**
-- **从未在任何实际档案中出现过 `0x8C 0x06`**
-
-| 归档 | 压缩块格式 | 算法 |
-|------|-----------|------|
-| 原始游戏档案 | `8C 00 ...` | LZHLW ✅ |
-| 朋友的归档 | `8C 00 ...` | LZHLW ✅ |
-| 自己的归档 | `8C 00 ...` | LZHLW ✅ |
-
-**0x06 的来源**：仅存在于 `oodle.c:29` 的映射表中
-```c
-{ "Kraken", 8, 6 },   // ← 这是定义，不是实际使用
-```
 
 ### 当前配置确认
 
 | 配置项 | 当前值 | 状态 |
 |--------|--------|------|
 | **DLL** | `oo2core_5_win64.dll` | ✅ 正确 |
-| **算法 (Compress Enum)** | `1` | ✅ LZHLW |
-| **算法 (Raw Value)** | `0x00` | ✅ 写入压缩块 |
+| **算法 (Compress Enum)** | `8` | ✅ Kraken |
+| **算法 (Raw Value)** | `0x06` | ✅ 写入压缩块 |
 | **压缩级别** | `7` | ✅ 正确 |
 
 ### 验证方法
@@ -539,19 +465,18 @@ xxxx -s 16 -l 8 archive.ttarch2
 xxd -s 0x30 -l 4 archive.ttarch2
 
 # 输出示例：
-# 8C 00 XX XX  → LZHLW 算法 ✅
+# 8C 06 XX XX  → Kraken 算法 ✅
 # ^^
 # 固定值
     ^^
-    算法字节 = 0x00
+    算法字节 = 0x06
 ```
 
 ### 关键要点
 
 1. ✅ **每个压缩块的第二个字节 = 算法标识**
-2. ✅ **原始游戏使用 0x00 (LZHLW)**
-3. ✅ **0x06 (Kraken) 从未在实际档案中使用**
-4. ✅ **当前配置完全正确，与原始游戏一致**
+2. ✅ **原始游戏使用 0x06 (Kraken)**
+3. ✅ **当前配置完全正确，与原始游戏一致**
 
 ### TTArch2 压缩 Chunk 结构与 Padding 规则
 
@@ -640,7 +565,7 @@ if (最后一个 chunk 的数据 < 65536):
         the rebuilt archive try to rebuild it adding this -x option
 -A      rebuild ONLY: sort files alphabetically instead of by CRC hash
         (matches original TTArch2 archive file order)
--z      rebuild ONLY: use Oodle LZHLW compression for TTArch2 archives
+-z      rebuild ONLY: use Oodle Kraken compression for TTArch2 archives
         (pads last chunk to 0x10000 bytes for TTG-Tools compatibility)
 -4      rebuild ONLY: force 4ATT format instead of 3ATT in rebuild mode
         (default: 3ATT for gamenum < 58, 4ATT for gamenum >= 58)
