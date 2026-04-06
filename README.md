@@ -120,4 +120,4 @@ Makefile             - LLVM MinGW64 build
 
 ## License
 
-Original tool by Luigi Auriemma. Modifications for Oodle compression and Bug #5 fix.
+Original tool by Luigi Auriemma. Modifications for Oodle compression
