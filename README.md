@@ -81,7 +81,7 @@ ttarchext -l <gamenum> <archive.ttarch2>
 
 ## Oodle Compression
 
-Oodle compression is optional. For maximum compatibility, use uncompressed mode. The `-z` flag enables Oodle LZHLW compression (algorithm `0x00`, level 7) using `oo2core_5_win64.dll`.
+Use Oodle compression (`-z`) for Switch compatibility. The `-z` flag enables Oodle Kraken compression (algorithm `0x06`, level 7) using `oo2core_5_win64.dll`. The `-L` flag is required to prevent `.lua` files from being renamed to `.lenc`.
 
 | Mode | Compatibility | Archive Size |
 |------|--------------|--------------|
