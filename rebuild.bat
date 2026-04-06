@@ -1,5 +1,4 @@
 @echo off
-chcp 65001 >nul
 REM ============================================================================
 REM TTArch2 Patch Rebuild Script
 REM ============================================================================
@@ -14,10 +13,10 @@ setlocal
 REM ============================================================================
 REM Configuration
 REM ============================================================================
-set "SOURCE_ARCHIVE=D:\SwitchGames\SAK_64bit\output\WD2_nx_Project_data.ttarch2\original-archives\WD2_nx_Project_data.ttarch2"
-set "PATCH_DIR=D:\SwitchGames\SAK_64bit\output\WD2_nx_Project_data.ttarch2\patch-temp"
-set "FIXED_FILE=D:\SwitchGames\SAK_64bit\output\WD2_nx_Project_data.ttarch2\fixed\choice.prop"
-set "OUTPUT_DIR=D:\SwitchGames\SAK_64bit\output\WD2_nx_Project_data.ttarch2\pack-by-ttarchext"
+set "SOURCE_ARCHIVE=PATH_TO_YOUR_FOLDER\original-archives\WD2_nx_Project_data.ttarch2"
+set "PATCH_DIR=PATH_TO_YOUR_FOLDER\output\WD2_nx_Project_data.ttarch2\patch-temp"
+set "FIXED_FILE=PATH_TO_YOUR_FOLDER\output\WD2_nx_Project_data.ttarch2\fixed\choice.prop"
+set "OUTPUT_DIR=PATH_TO_YOUR_FOLDER\output\WD2_nx_Project_data.ttarch2\pack-by-ttarchext"
 set "OUTPUT_FILE=%OUTPUT_DIR%\WD2_nx_Project_data.ttarch2"
 set "GAME_NUM=55"
 
@@ -114,15 +113,15 @@ echo ===========================================================================
 echo.
 echo Source: %PATCH_DIR%
 echo Output: %OUTPUT_FILE%
-echo Options: -b -z -A -V 7 %GAME_NUM%
+echo Options: -b -z -L -V 7 %GAME_NUM%
 echo.
 echo - Rebuild mode (-b): Create new archive
 echo - Oodle compression (-z): Use LZHLW compression (level 7)
-echo - Alphabetical sort (-A): Match original archive format
+echo - Keep .lua extension (-L): Don't convert .lua to .lenc
 echo - Version 7 (-V 7): Force TTArch2 version
 echo.
 
-.\ttarchext_x64.exe -o -b -z -A -L -4 -V 7 %GAME_NUM% "%OUTPUT_FILE%" "%PATCH_DIR%"
+.\ttarchext_x64.exe -o -b -z -L -V 7 %GAME_NUM% "%OUTPUT_FILE%" "%PATCH_DIR%"
 
 if %ERRORLEVEL% NEQ 0 (
     echo.

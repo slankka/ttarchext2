@@ -177,7 +177,7 @@ int oodle_compress(unsigned char *in, int insz, unsigned char *out) {
         if(algo_env) {
             algo = atoi(algo_env);
         } else {
-            algo = 8;  // Kraken (raw value 0x06, matches original game archive)
+            algo = 8;  // Kraken (raw value 0x06)
         }
     }
 
@@ -187,7 +187,7 @@ int oodle_compress(unsigned char *in, int insz, unsigned char *out) {
         return -1;
     }
 
-    // CRITICAL: Try level 7 to match original game compression level
+    // Use level 7 to match original game compression level
     static int level = 7;
     compressed_size = OodleLZ_Compress(algo, in, (long long)insz, out, level, NULL, NULL, NULL, NULL, 0);
 
