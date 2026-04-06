@@ -83,10 +83,10 @@ ttarchext -l <gamenum> <archive.ttarch2>
 
 Use Oodle compression (`-z`) for Switch compatibility. The `-z` flag enables Oodle Kraken compression (algorithm `0x06`, level 7) using `oo2core_5_win64.dll`. The `-L` flag is required to prevent `.lua` files from being renamed to `.lenc`.
 
-| Mode | Compatibility | Archive Size |
-|------|--------------|--------------|
-| Uncompressed (no `-z`) | 100% | Larger |
-| Oodle compressed (`-z`) | Game-dependent | ~15-20% of original |
+| Mode | Switch | TTG-Tools | Archive Size |
+|------|--------|-----------|--------------|
+| Oodle compressed (`-z -L`) | ✅ | ✅ (with padding + `-4`) | ~15-20% of original |
+| Uncompressed (no `-z`) | ❌ | ✅ | Larger |
 
 ## Supported Games
 
